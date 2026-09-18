@@ -1,93 +1,102 @@
-    name: Build Android ARM64 APK
+name: Build Android ARM64 APK
 
-    on:
-      workflow_dispatch:
+on:
+  workflow_dispatch:
 
-    jobs:
-      build-android:
-        name: Build Android ARMv8 (aarch64)
-        runs-on: ubuntu-latest
-        timeout-minutes: 60
+jobs:
+  build-android:
+    name: Build Android ARMv8 (aarch64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
 
-        steps:
-          - name: Download code
-            uses: actions/checkout@v4
+    steps:
+      - name: Download code and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-          - name: Setup pnpm
-            uses: pnpm/action-setup@v4
-            with:
-              run_install: false
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
 
-          - name: Setup Node
-            uses: actions/setup-node@v4
-            with:
-              node-version: 24
-              cache: pnpm
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
 
-          - name: Setup Java
-            uses: actions/setup-java@v4
-            with:
-              distribution: 'zulu'
-              java-version: '17'
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
 
-          - name: Setup Android SDK
-            uses: android-actions/setup-android@v4
-            with:
-              packages: 'platform-tools'
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
-          - name: Install Android NDK
-            run: sdkmanager "ndk;28.2.13676358"
+      - name: Install Android NDK
+        run: sdkmanager "ndk;28.2.13676358"
 
-          - name: Setup Rust for ARM64
-            uses: dtolnay/rust-toolchain@stable
-            with:
-              targets: aarch64-linux-android
+      - name: Setup Rust for ARM64
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
 
-          - name: Install dependencies
-            run: pnpm install --frozen-lockfile --prefer-offline
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: android-aarch64-cargo
 
-          - name: Create local config
-            run: |
-              cat << 'EOF' > apps/readest-app/.env.local
-              NEXT_PUBLIC_APP_PLATFORM=tauri
-              NEXT_PUBLIC_SELF_HOSTED=true
-              EOF
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
 
-          - name: Make Android Signing Key
-            run: |
-              mkdir -p $RUNNER_TEMP/keystore
-              keytool -genkeypair -v \
-                -keystore $RUNNER_TEMP/keystore/release.keystore \
-                -alias readest \
-                -keyalg RSA \
-                -keysize 2048 \
-                -validity 10000 \
-                -storepass readest123 \
-                -keypass readest123 \
-                -dname "CN=Readest, OU=Readest, O=Readest, L=Unknown, ST=Unknown, C=US"
+      - name: Create local config
+        run: |
+          cat << 'EOF' > apps/readest-app/.env.local
+          NEXT_PUBLIC_APP_PLATFORM=tauri
+          NEXT_PUBLIC_SELF_HOSTED=true
+          EOF
 
-              cat << EOF > apps/readest-app/src-tauri/gen/android/keystore.properties
-              keyAlias=readest
-              password=readest123
-              storeFile=$RUNNER_TEMP/keystore/release.keystore
-              EOF
+      - name: Build the Android App
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+        run: |
+          cd apps/readest-app/
+          rm -rf src-tauri/gen/android
+          pnpm tauri android init
+          pnpm tauri icon ../../data/icons/readest-book.png
+          git checkout .
 
-          - name: Build the Android App
-            env:
-              NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
-            run: |
-              cd apps/readest-app/
-              pnpm tauri android init
-              pnpm tauri icon ../../data/icons/readest-book.png
-              git checkout .
-              pnpm tauri android build -t aarch64
+          # Create self-signing release key
+          mkdir -p $RUNNER_TEMP/keystore
+          keytool -genkeypair -v \
+            -keystore $RUNNER_TEMP/keystore/release.keystore \
+            -alias readest \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass readest123 \
+            -keypass readest123 \
+            -dname "CN=Readest, OU=Readest, O=Readest, L=Unknown, ST=Unknown, C=US"
 
-              mkdir -p dist
-              find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" -exec cp {} dist/Readest-arm64-v8a-pro.apk \;
+          cat << EOF > src-tauri/gen/android/keystore.properties
+          keyAlias=readest
+          password=readest123
+          storeFile=$RUNNER_TEMP/keystore/release.keystore
+          EOF
 
-          - name: Save the APK for Download
-            uses: actions/upload-artifact@v4
-            with:
-              name: Readest-arm64-v8a-pro
-              path: apps/readest-app/dist/Readest-arm64-v8a-pro.apk
-              if-no-files-found: error
+          # Build ARM64 APK
+          pnpm tauri android build -t aarch64
+
+          mkdir -p dist
+          find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" -exec cp {} dist/Readest-arm64-v8a-pro.apk \;
+
+      - name: Save the APK for Download
+        uses: actions/upload-artifact@v4
+        with:
+          name: Readest-arm64-v8a-pro
+          path: apps/readest-app/dist/Readest-arm64-v8a-pro.apk
+          if-no-files-found: error
