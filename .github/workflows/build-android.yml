@@ -53,6 +53,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
 
+      - name: Copy vendor assets (pdfjs, simplecc, jieba)
+        run: pnpm --filter @readest/readest-app setup-vendors
+
       - name: Create local config
         run: |
           cat << 'EOF' > apps/readest-app/.env.local
