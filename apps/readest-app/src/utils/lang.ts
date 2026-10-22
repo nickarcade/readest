@@ -163,12 +163,23 @@ export const detectLanguage = (content: string): string => {
   }
 };
 
+// A PDF rarely declares a language, and its text layer is always tagged `en`, so
+// Read Aloud picks the voice from the page being read. Short pages (a cover, a
+// heading) are left alone: too little text to tell English from its neighbours.
+export const getPDFSpeechLang = (primaryLang: string | undefined, pageText: string): string => {
+  if (isValidLang(primaryLang) && !['en', 'eng'].includes(normalizedLangCode(primaryLang))) {
+    return primaryLang!;
+  }
+  const text = pageText.replace(/\s+/g, ' ').trim();
+  return text.length >= 100 ? detectLanguage(text) : 'en';
+};
+
 export const getLanguageInfo = (lang: string) => {
   if (!lang) return {};
   try {
     const canonical = Intl.getCanonicalLocales(lang)[0]!;
     const locale = new Intl.Locale(canonical) as LocaleWithTextInfo;
-    const isCJK = ['zh', 'ja', 'kr'].includes(locale.language);
+    const isCJK = ['zh', 'ja', 'ko'].includes(locale.language);
     const direction = (locale.getTextInfo?.() ?? locale.textInfo)?.direction;
     return { canonical, locale, isCJK, direction };
   } catch (e) {
