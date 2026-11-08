@@ -1,4 +1,6 @@
-import { act, cleanup, render, screen } from '@testing-library/react';
+// @vitest-environment happy-dom
+import { bookDataStoreHooks } from '@/__tests__/helpers/book-data-store-mock';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import HeaderBar from '@/app/reader/components/HeaderBar';
@@ -25,8 +27,14 @@ vi.mock('@/store/settingsStore', () => ({
     settings: { globalReadSettings: { highlightStyle: 'highlight', highlightStyles: {} } },
   }),
 }));
+let isIPhoneDuo = false;
 vi.mock('@/store/themeStore', () => ({
-  useThemeStore: () => ({ isDarkMode: false, systemUIVisible: true, statusBarHeight: 0 }),
+  useThemeStore: () => ({
+    isDarkMode: false,
+    systemUIVisible: true,
+    statusBarHeight: 0,
+    isIPhoneDuo,
+  }),
 }));
 vi.mock('@/store/sidebarStore', () => ({
   useSidebarStore: () => ({ isSideBarVisible: false, getIsSideBarVisible: () => false }),
@@ -45,7 +53,7 @@ let currentBookData: {
   book?: { title: string; metadata?: { series?: string; seriesIndex?: number } };
 } | null = null;
 vi.mock('@/store/bookDataStore', () => ({
-  useBookDataStore: () => ({ getBookData: () => currentBookData, getConfig: () => null }),
+  ...bookDataStoreHooks(() => ({ getBookData: () => currentBookData, getConfig: () => null })),
 }));
 vi.mock('@/store/trafficLightStore', () => ({
   useTrafficLightStore: () => ({
@@ -110,11 +118,19 @@ afterEach(() => {
   useEnvMock.mockReset();
   setHoveredBookKey.mockReset();
   currentBookData = null;
+  isIPhoneDuo = false;
 });
 
 describe('HeaderBar sidebar toggle', () => {
-  it('is hidden on tablet portrait, where the footer bar owns the TOC tab', () => {
+  it('is shown on tablet portrait, top-left as on desktop (#7292)', () => {
     setViewport(834, 1194);
+    renderHeader();
+    expect(screen.getByText('sidebar-toggler')).toBeTruthy();
+  });
+
+  it('stays hidden on iPhone Duo, which keeps the phone bars in every pose', () => {
+    isIPhoneDuo = true;
+    setViewport(951, 669);
     renderHeader();
     expect(screen.queryByText('sidebar-toggler')).toBeNull();
   });
@@ -185,6 +201,53 @@ describe('HeaderBar book metadata data attributes (#5776)', () => {
     expect(title.getAttribute('data-book-title')).toBe('Book');
     expect(title.hasAttribute('data-book-series')).toBe(false);
     expect(title.hasAttribute('data-book-series-index')).toBe(false);
+  });
+});
+
+describe('HeaderBar hover strip (#6999)', () => {
+  // The strip along the top edge reveals the header on mouseenter, and the
+  // header hides on its own mouseleave. A pointer that crosses the strip and
+  // lands in the book with its next move never entered the header, so only the
+  // strip sees it go.
+  const hoverStrip = (container: HTMLElement) =>
+    container.querySelector('div[role="none"]') as HTMLElement;
+
+  beforeEach(() => {
+    useEnvMock.mockReturnValue({ envConfig: {}, appService: { isMobile: false } });
+    setViewport(1440, 900);
+  });
+
+  const renderWithHeaderAt = (rect: Partial<DOMRect>) => {
+    const result = renderHeader();
+    vi.spyOn(screen.getByRole('banner'), 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      right: 1440,
+      top: 0,
+      bottom: 44,
+      ...rect,
+    } as DOMRect);
+    return result;
+  };
+
+  it('hides the header when the pointer leaves the strip for the book', () => {
+    const { container } = renderWithHeaderAt({});
+    fireEvent.mouseLeave(hoverStrip(container), { clientX: 700, clientY: 300 });
+    expect(setHoveredBookKey).toHaveBeenCalledWith('');
+  });
+
+  it('keeps the header when the pointer leaves the strip for the header itself', () => {
+    const { container } = renderWithHeaderAt({});
+    fireEvent.mouseLeave(hoverStrip(container), { clientX: 700, clientY: 20 });
+    expect(setHoveredBookKey).not.toHaveBeenCalledWith('');
+  });
+
+  it('keeps the header for a pointer on the top row of a maximized window (#7015)', () => {
+    // The pointer can't go above y=0, the header's own top edge, so the strip
+    // and the header passing it back and forth there must not hide it.
+    const { container } = renderWithHeaderAt({});
+    fireEvent.mouseLeave(hoverStrip(container), { clientX: 700, clientY: 0 });
+    fireEvent.mouseLeave(screen.getByRole('banner'), { clientX: 700, clientY: 0 });
+    expect(setHoveredBookKey).not.toHaveBeenCalledWith('');
   });
 });
 

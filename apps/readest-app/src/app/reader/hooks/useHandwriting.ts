@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { useBookDataStore } from '@/store/bookDataStore';
+import { useBookDataStore, useBookConfig, useBookData } from '@/store/bookDataStore';
 import { useReaderStore } from '@/store/readerStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useBookProgress } from '@/store/readerProgressStore';
@@ -8,7 +8,7 @@ import { useEnv } from '@/context/EnvContext';
 import { saveSysSettings } from '@/helpers/settings';
 import { HandwritingEditor } from '@/services/handwriting/editor';
 import { HandwritingService, nextInkSession } from '@/services/handwriting/handwritingService';
-import { loadInkEditor, withInkNotes } from '@/services/handwriting/persistence';
+import { inkSignature, loadInkEditor, withInkNotes } from '@/services/handwriting/persistence';
 import { fixedPageKey, sectionPageKey } from '@/services/handwriting/pageKey';
 import { createInkAnchoring } from '../utils/inkAnchoring';
 import { boundsOf } from '@/services/handwriting/anchor';
@@ -16,7 +16,6 @@ import type { PageRect } from '@/services/handwriting/coords';
 import type { InkStroke, InkTool } from '@/services/handwriting/model';
 import type { ReadSettings } from '@/types/settings';
 import type { FoliateView } from '@/types/view';
-import type { BookNote } from '@/types/book';
 
 /** Strokes normalized to one rect; the canvas draws each layer against its rect. */
 export interface InkLayer {
@@ -45,13 +44,6 @@ const describeInk = (view: FoliateView, cfi: string): string => {
     return '';
   }
 };
-
-/** What identifies the book's ink notes, to tell outside edits from our own. */
-const inkSignature = (notes: BookNote[] | undefined) =>
-  (notes ?? [])
-    .filter((n) => n.type === 'ink')
-    .map((n) => `${n.id}:${n.updatedAt}:${n.deletedAt ?? ''}`)
-    .join();
 
 const sameRect = (a: PageRect, b: PageRect) =>
   a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height;
@@ -82,12 +74,14 @@ const measureFixedPage = (view: FoliateView | null): PageRect | null => {
 };
 
 export function useHandwriting(bookKey: string) {
-  const { getBookData, getConfig, setConfig, saveConfig } = useBookDataStore();
+  const getConfig = useBookDataStore((s) => s.getConfig);
+  const setConfig = useBookDataStore((s) => s.setConfig);
+  const saveConfig = useBookDataStore((s) => s.saveConfig);
   const { getView, getViewSettings } = useReaderStore();
   const { settings } = useSettingsStore();
   const { envConfig } = useEnv();
   const progress = useBookProgress(bookKey);
-  const isFixedLayout = !!getBookData(bookKey)?.isFixedLayout;
+  const isFixedLayout = !!useBookData(bookKey)?.isFixedLayout;
   // Scrolled views show several pages at once; strokes are routed per page.
   const scrolled = !!getViewSettings(bookKey)?.scrolled;
   // Each tool keeps its own color and width; the dock shows the active one's.
@@ -159,7 +153,7 @@ export function useHandwriting(bookKey: string) {
 
   // An ink annotation deleted from the sidebar, or ink pulled by sync,
   // changes the notes without this hook; pick it up.
-  const booknotes = getConfig(bookKey)?.booknotes;
+  const booknotes = useBookConfig(bookKey)?.booknotes;
   useEffect(() => {
     if (inkSignature(booknotes) !== inkSignatureRef.current) reload();
   }, [booknotes, reload]);
@@ -224,10 +218,14 @@ export function useHandwriting(bookKey: string) {
     update();
     const ro = new ResizeObserver(update);
     ro.observe(cellEl);
-    const renderer = getView(bookKey)?.renderer;
-    for (const frame of isFixedLayout ? pageFrames(getView(bookKey)) : []) ro.observe(frame);
+    const view = getView(bookKey);
+    const renderer = view?.renderer;
+    for (const frame of isFixedLayout ? pageFrames(view) : []) ro.observe(frame);
     renderer?.addEventListener('scroll', update);
     const mo = new MutationObserver(update);
+    // A push page turn slides the whole view in and writes its resting
+    // transform there when it lands; a page measured mid-slide is off screen.
+    if (view) mo.observe(view, { attributes: true, attributeFilter: ['style'] });
     if (renderer?.shadowRoot) {
       mo.observe(renderer.shadowRoot, {
         attributes: true,
@@ -324,6 +322,20 @@ export function useHandwriting(bookKey: string) {
     },
     [getView, bookKey, scrolled],
   );
+
+  useEffect(() => {
+    serviceRef.current?.onGesture((gesture) => {
+      if (gesture.action !== 'swipe') return;
+      const { dx, dy } = gesture;
+      const view = getView(bookKey);
+      if (scrolled && view?.renderer.scrollProp !== 'scrollLeft') {
+        if (Math.abs(dy) > Math.abs(dx)) void (dy > 0 ? view?.prev() : view?.next());
+      } else if (Math.abs(dx) > Math.abs(dy)) {
+        if (dx > 0) view?.goLeft();
+        else view?.goRight();
+      }
+    });
+  }, [scrolled, getView, bookKey]);
 
   // Scrolled views show several sections or pages at once: send each stroke
   // to the one it is drawn over, pinned to that section's text or page.
